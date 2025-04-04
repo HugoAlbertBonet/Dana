@@ -20,6 +20,7 @@ parser.add_argument('--epoch', type=int, default=0, help='starting epoch')
 parser.add_argument('--n_epochs', type=int, default=200, help='number of epochs of training')
 parser.add_argument('--batchSize', type=int, default=10, help='size of the batches')
 parser.add_argument('--dataroot', type=str, default='./segmentation', help='root directory of the dataset')
+parser.add_argument('--name', type=str, default='unet_segmentation', help='name of the saved model')
 parser.add_argument('--lr', type=float, default=0.0002, help='initial learning rate')
 parser.add_argument('--decay_epoch', type=int, default=100, help='epoch to start linearly decaying the learning rate to 0')
 parser.add_argument('--size', type=int, default=1024, help='size of the data crop (squared assumed)')
@@ -63,6 +64,8 @@ transforms_ = [ transforms.Resize((opt.size, opt.size)), transforms.RandomAffine
 transforms_post = [transforms.ToTensor()]
 dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=transforms_, transforms_post = transforms_post, unaligned=False),
                         batch_size=opt.batchSize, shuffle=True) #, num_workers=opt.n_cpu)
+test_dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=transforms_, transforms_post = transforms_post, unaligned=False, mode = "test"),
+                        batch_size=opt.batchSize, shuffle=True)
 
 # Loss plot
 logger = Logger(opt.n_epochs, len(dataloader))
@@ -84,6 +87,7 @@ print("Starting training...")
 
 ###### Training ######
 for epoch in range(opt.epoch, opt.n_epochs):
+    model.train()
     for i, batch in enumerate(dataloader):
         if i == len(dataloader)-1: break
         # Set model input
@@ -103,9 +107,24 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
         # Progress report (http://localhost:8097)
         logger.log({'loss': loss, 'DICE': dice(pred, mask)})
+        
+    model.eval()
+    with torch.no_grad():
+      for i, batch in enumerate(test_dataloader):
+          if i == len(test_dataloader)-1: break
+          # Set model input
+          image = Variable(input_unet.copy_(batch['image']))
+          mask = Variable(input_unet2.copy_(batch['mask']))
+  
+          
+          pred = model(image)
+          loss_val = criterion(pred, mask)
+  
+          # Progress report (http://localhost:8097)
+          logger.log({'loss_val': loss_val, 'DICE_val': dice(pred, mask)})
 
     # Update learning rates
     lr_scheduler.step()
 
     # Save models checkpoints
-    torch.save(model.state_dict(), 'output/unet_segmentation.pth')
+    torch.save(model.state_dict(), f'output/{opt.name}.pth')
