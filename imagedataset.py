@@ -226,9 +226,9 @@ class SegmentationDataset(Dataset):
         self.images = sorted(glob.glob(root + '/images/*.*'))
         self.masks = sorted(glob.glob(root + '/masks/*.*'))
         if mode == "test":
-            self.images = self.images[round(0.8*len(self.images)):]
+            self.masks = self.masks[round(0.8*len(self.masks)):]
         else:
-            self.images = self.images[:round(0.8*len(self.images))]
+            self.masks = self.masks[:round(0.8*len(self.masks))]
         self.mode = mode
         self.unaligned = unaligned
 

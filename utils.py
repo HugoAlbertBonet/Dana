@@ -15,10 +15,11 @@ def tensor2image(tensor):
     return image.astype(np.uint8)
 
 class Logger():
-    def __init__(self, n_epochs, batches_epoch):
+    def __init__(self, n_epochs, batches_epoch, batches_epoch_val):
         #self.viz = Visdom()
         self.n_epochs = n_epochs
-        self.batches_epoch = batches_epoch
+        self.batches_epoch = batches_epoch-1
+        self.batches_epoch_val = batches_epoch_val
         self.epoch = 1
         self.batch = 1
         self.prev_time = time.time()
@@ -26,12 +27,12 @@ class Logger():
         self.losses = {}
         self.loss_windows = {}
         self.image_windows = {}
+        self.val = False
 
 
     def log(self, losses=None, images=None):
         self.mean_period += (time.time() - self.prev_time)
         self.prev_time = time.time()
-
         sys.stdout.write('\rEpoch %03d/%03d [%04d/%04d] -- ' % (self.epoch, self.n_epochs, self.batch, self.batches_epoch))
 
         for i, loss_name in enumerate(losses.keys()):
@@ -39,7 +40,6 @@ class Logger():
                 self.losses[loss_name] = losses[loss_name].data.item()
             else:
                 self.losses[loss_name] += losses[loss_name].data.item()
-
             if (i+1) == len(losses.keys()):
                 sys.stdout.write('%s: %.4f -- ' % (loss_name, self.losses[loss_name]/self.batch))
             else:
@@ -57,7 +57,7 @@ class Logger():
                 self.viz.image(tensor2image(tensor.data), win=self.image_windows[image_name], opts={'title':image_name})"""
 
         # End of epoch
-        if (self.batch % self.batches_epoch) == 0:
+        if ((self.batch % self.batches_epoch) == 0 and not self.val) or ((self.batch % self.batches_epoch_val) == 0 and self.val):
             # Plot losses
             for loss_name, loss in self.losses.items():
                 """
@@ -69,8 +69,8 @@ class Logger():
                 # Reset losses for next epoch"""
                 self.losses[loss_name] = 0.0
 
-            self.epoch += 1
             self.batch = 1
+            self.epoch += 1
             sys.stdout.write('\n')
         else:
             self.batch += 1

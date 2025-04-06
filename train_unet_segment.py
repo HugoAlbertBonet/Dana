@@ -60,15 +60,16 @@ input_unet2 = Tensor(opt.batchSize, 1, opt.size, opt.size)
 
 
 # Dataset loader
-transforms_ = [ transforms.Resize((opt.size, opt.size)), transforms.RandomAffine(30, translate= (0.2,0.2)), transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip()]
+transforms_ = [ transforms.Resize((opt.size, opt.size)), transforms.RandomAffine(30, translate= (0.2,0.2)), transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip()]#,
+                #transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1), transforms.RandomGrayscale(p=0.1), transforms.ElasticTransform(alpha=25.0)]
 transforms_post = [transforms.ToTensor()]
 dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=transforms_, transforms_post = transforms_post, unaligned=False),
                         batch_size=opt.batchSize, shuffle=True) #, num_workers=opt.n_cpu)
-test_dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=transforms_, transforms_post = transforms_post, unaligned=False, mode = "test"),
+test_dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=[transforms.Resize((opt.size, opt.size))], transforms_post = transforms_post, unaligned=False, mode = "test"),
                         batch_size=opt.batchSize, shuffle=True)
 
 # Loss plot
-logger = Logger(opt.n_epochs, len(dataloader))
+logger = Logger(opt.n_epochs, len(dataloader), len(test_dataloader))
 
 def dice(pred, mask, threshold=0.5):
     # Apply sigmoid to get probabilities if needed
@@ -108,20 +109,30 @@ for epoch in range(opt.epoch, opt.n_epochs):
         # Progress report (http://localhost:8097)
         logger.log({'loss': loss, 'DICE': dice(pred, mask)})
         
+        # Validation phase
     model.eval()
+    val_loss = 0.0
+    val_dice = 0.0
     with torch.no_grad():
-      for i, batch in enumerate(test_dataloader):
-          if i == len(test_dataloader)-1: break
-          # Set model input
-          image = Variable(input_unet.copy_(batch['image']))
-          mask = Variable(input_unet2.copy_(batch['mask']))
-  
-          
-          pred = model(image)
-          loss_val = criterion(pred, mask)
-  
-          # Progress report (http://localhost:8097)
-          logger.log({'loss_val': loss_val, 'DICE_val': dice(pred, mask)})
+        for j, val_batch in enumerate(test_dataloader):
+            if j == len(test_dataloader)-1: break
+            val_image = Variable(input_unet.copy_(val_batch['image']))
+            val_mask = Variable(input_unet2.copy_(val_batch['mask']))
+
+            val_pred = model(val_image)
+            batch_loss = criterion(val_pred, val_mask)
+            batch_dice = dice(val_pred, val_mask)
+
+            val_loss += batch_loss.item()
+            val_dice += batch_dice.item()
+            #logger.log({'val_loss': batch_loss, 'val_DICE': batch_dice})
+
+    # Average validation loss and DICE
+    val_loss /= len(test_dataloader)
+    val_dice /= len(test_dataloader)
+
+    print(f"\nEpoch {epoch+1}/{opt.n_epochs} - Validation Loss: {val_loss:.4f}, DICE: {val_dice:.4f}")
+    
 
     # Update learning rates
     lr_scheduler.step()
