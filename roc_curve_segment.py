@@ -30,6 +30,7 @@ parser.add_argument('--size', type=int, default=1024, help='size of the data cro
 parser.add_argument('--input_nc', type=int, default=3, help='number of channels of input data')
 parser.add_argument('--output_nc', type=int, default=1, help='number of channels of output data')
 parser.add_argument('--name', type=str, default="", help='name of file to test')
+parser.add_argument('--model', type=str, default="", help='name of model to test')
 parser.add_argument('--thr', type=float, default=0.5, help='name of file to test')
 parser.add_argument('--cuda', action='store_true', help='use GPU computation')
 parser.add_argument('--n_cpu', type=int, default=2, help='number of cpu threads to use during batch generation')
@@ -43,7 +44,7 @@ if torch.cuda.is_available() and not opt.cuda:
 # Networks
 print("Loading model...")
 model = UNet(n_class = 1)
-model.load_state_dict(torch.load("./output/unet_segmentation400epochs_2.pth", weights_only=True))
+model.load_state_dict(torch.load(f"./output/{opt.model}.pth", weights_only=True))
 
 
 if opt.cuda:
@@ -116,30 +117,6 @@ fp_eq_fn_threshold = thresholds[fp_eq_fn_idx]
 fp_eq_fn_fpr = fpr[fp_eq_fn_idx]
 fp_eq_fn_tpr = tpr[fp_eq_fn_idx]
 
-print("Plotting ROC curves...")
-# Plot ROC curve
-plt.figure()
-plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (AUC = {:.4f})'.format(roc_auc))
-plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Chance')
-
-# Plot dot for Youden Index optimal threshold
-plt.plot(optimal_fpr, optimal_tpr, 'ro', label='Youden Index\nThreshold = {:.2f}'.format(optimal_threshold))
-
-# Plot dot for FP = FN
-plt.plot(fp_eq_fn_fpr, fp_eq_fn_tpr, 'bo', label='FP = FN\nThreshold = {:.2f}'.format(fp_eq_fn_threshold))
-
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic for UNet Segmentation')
-plt.legend(loc="lower right")
-plt.grid(True)
-plt.savefig("plots/roc_curve.png")
-plt.close()
-
-
-
 # Plot DICE score vs Threshold
 import numpy as np
 print("Computing DICE vs threshold...")
@@ -158,16 +135,63 @@ for thr in tqdm(thresholds):
     dice = (2. * intersection) / (np.sum(pred_bin) + np.sum(mask) + 1e-8)
     dice_scores.append(dice)
 
+# Find max DICE score threshold
+max_dice_idx = np.argmax(dice_scores)
+max_dice_threshold = thresholds[max_dice_idx]
+max_dice_value = dice_scores[max_dice_idx]
+
+print("Plotting ROC curves...")
+# Find the index of the ROC threshold closest to the max DICE threshold
+max_dice_roc_idx = np.abs(thresholds - max_dice_threshold).argmin()
+max_dice_fpr = fpr[max_dice_roc_idx]
+max_dice_tpr = tpr[max_dice_roc_idx]
+
+# Plot ROC curve
+plt.figure()
+plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (AUC = {:.4f})'.format(roc_auc))
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Chance')
+
+# Plot dots
+plt.plot(optimal_fpr, optimal_tpr, 'ro', label='Youden Index\nThreshold = {:.4f}'.format(optimal_threshold))
+plt.plot(fp_eq_fn_fpr, fp_eq_fn_tpr, 'bo', label='FP = FN\nThreshold = {:.4f}'.format(fp_eq_fn_threshold))
+plt.plot(max_dice_fpr, max_dice_tpr, 'mo', label='Max DICE\nThreshold = {:.4f}'.format(max_dice_threshold))
+
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic for UNet Segmentation')
+plt.legend(loc="lower right")
+plt.grid(True)
+plt.savefig(f"plots/{opt.model}_roc_curve.png")
+plt.close()
+
+
+
+
+
 print("Plotting DICE vs threshold...")
 # Plot the Dice curve
 plt.figure()
-plt.plot(thresholds, dice_scores, color='green', lw=2)
+plt.plot(thresholds, dice_scores, color='green', lw=2, label='DICE curve')
+
+# Plot dots and annotate
+plt.plot(optimal_threshold, dice_scores[np.abs(thresholds - optimal_threshold).argmin()], 'ro', label='Youden Index\nThreshold = {:.4f}'.format(optimal_threshold))
+plt.plot(fp_eq_fn_threshold, dice_scores[np.abs(thresholds - fp_eq_fn_threshold).argmin()], 'bo', label='FP = FN\nThreshold = {:.4f}'.format(fp_eq_fn_threshold))
+plt.plot(max_dice_threshold, max_dice_value, 'mo', label='Max DICE\nThreshold = {:.4f}'.format(max_dice_threshold))
+
 plt.xlabel('Threshold')
 plt.ylabel('DICE Score')
 plt.title('DICE Score vs Threshold')
 plt.grid(True)
-plt.savefig("plots/dice_vs_threshold.png")
+
+# Center the legend below the plot
+plt.legend(loc="center", bbox_to_anchor=(0.5, 0.25), ncol=1, frameon=True)
+
+plt.tight_layout()
+plt.savefig(f"plots/{opt.model}_dice_vs_threshold.png", bbox_inches='tight')
 plt.close()
+
 
 print("Done")
 """
