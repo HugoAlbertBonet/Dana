@@ -26,6 +26,7 @@ parser.add_argument('--size', type=int, default=1024, help='size of the data cro
 parser.add_argument('--input_nc', type=int, default=3, help='number of channels of input data')
 parser.add_argument('--output_nc', type=int, default=3, help='number of channels of output data')
 parser.add_argument('--name', type=str, default="", help='name of file to test')
+parser.add_argument('--model', type=str, default="", help='name of model to test')
 parser.add_argument('--thr', type=float, default=0.5, help='name of file to test')
 parser.add_argument('--cuda', action='store_true', help='use GPU computation')
 parser.add_argument('--n_cpu', type=int, default=2, help='number of cpu threads to use during batch generation')
@@ -39,7 +40,7 @@ if torch.cuda.is_available() and not opt.cuda:
 # Networks
 print("Loading model...")
 model = UNet(n_class = 1)
-model.load_state_dict(torch.load("./output/unet_segmentation400epochs_2.pth", weights_only=True))
+model.load_state_dict(torch.load(f"./output/{opt.model}.pth", weights_only=True))
 
 
 if opt.cuda:
@@ -75,6 +76,6 @@ new_name = name.split("/")[-1]
 print("Saving result...")
 masked_image = Image.blend(transforms.functional.to_pil_image(image_tensor[0]),transforms.functional.to_pil_image(mask_bin[0]).convert("RGB"), 0.7)
     
-masked_image.save(f'trials/masked_{new_name}.jpg')
+masked_image.save(f'trials/masked_{new_name}_{opt.model}.jpg')
 image.save(f'trials/real_{new_name}.jpg')
-print(f'Saved at: trials/masked_{new_name}.jpg')
+print(f'Saved at: trials/masked_{new_name}_{opt.model}.jpg')

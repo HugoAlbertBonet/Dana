@@ -4,14 +4,14 @@ import os
 import gradio as gr
 import glob
 import torch
+import math
 import torchvision.transforms as transforms
 from dotenv import load_dotenv
 from PIL import Image
 import numpy as np
-import pandas as pd
 from libs.inpainter import SDImpainting
 from models import UNet
-from libs.metrics import reMOVE
+from libs.face_extractor import FaceExtractor
 from utils import (
     generate_binary_mask,
     delete_irrelevant_detected_pixels,
@@ -22,7 +22,6 @@ from utils import (
 )
 import gc
 
-
 print("All packages imported")
 # Cargar variables de entorno
 load_dotenv()
@@ -30,25 +29,18 @@ load_dotenv()
 # Rutas de archivos generados
 RUTA_MASCARA = "processed_mask.png"
 RUTA_IMAGEN_FINAL = "final_output.png"
-transformations = transforms.Compose([transforms.Resize((1024, 1024)),transforms.ToTensor()])
+transformations = transforms.Compose([transforms.ToTensor()]) #transforms.Resize((1024, 1024)),
 
 # Configuracion del dispositivo para modelos
 DEVICE = "cuda:1"
-DEVICE_UNET = "cuda:1"
+DEVICE_UNET = "cuda:0"
 print(f"DEVICE {DEVICE}")
 
 # Cargar modelos
 segmentation_model = UNet(n_class = 1)
 impainting_model = SDImpainting(DEVICE)
-remove = reMOVE(device = DEVICE_UNET)
+face_extractor = FaceExtractor()
 
-df_smudges = pd.DataFrame({
-            "type": ["original", "restored", "ratio"],
-            "value": [0,0,0]})
-            
-df_remove = pd.DataFrame({
-            "type": ["clean_mask-dirty_mask", "clean_mask-original", "dirty_mask-original"],
-            "value": [0,0,0]})
 
 # Funcion para sacar todos los modelos de segmentacion
 
@@ -60,54 +52,6 @@ def list_images():
     masks = sorted(glob.glob('../segmentation/masks/*.*'))
     masks = masks[round(0.8*len(masks)):]
     return masks
-    
-    
-def make_metrics_plot_smudges(original_image_path, restored_image_path, predicted_mask, thr):
-    try:
-        pred_image_path = apply_fill_little_spaces(predicted_mask, "pred")
-        mask = transforms.ToTensor()(Image.open(predicted_mask).convert("L"))
-        mask_dilatation = transforms.ToTensor()(Image.open(pred_image_path).convert("L"))
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        original_image = Image.open(original_image_path[:-3].replace("masks", "images")+"jpg").convert('RGB')
-        restored_image = Image.open(restored_image_path).convert('RGB')
-        image_tensor = transformations(restored_image).reshape((1, 3, 1024, 1024)).to(DEVICE_UNET)
-        global segmentation_model  
-        segmentation_model = segmentation_model.to(DEVICE_UNET)
-        restored_mask = segmentation_model(image_tensor)
-        restored_mask = torch.sigmoid(restored_mask)
-        restored_mask = (restored_mask >= thr).float()
-        clean_original = float(torch.sum(mask>0)/torch.sum(mask>=0))
-        clean_restored = float(torch.sum(restored_mask>0)/torch.sum(restored_mask>=0))
-        df_smudges = pd.DataFrame({
-            "type": ["original", "restored", "ratio"],
-            "value": [clean_original,clean_restored,clean_restored/clean_original]})
-        return gr.BarPlot(
-                  df_smudges,
-                  x="type",
-                  y="value"
-                )
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
-        
-def make_metrics_plot_remove(original_image_path, restored_image_path, predicted_mask):
-    try:
-        torch.cuda.empty_cache()
-        gc.collect()
-        remove_metrics = remove(predicted_mask, original_image_path, restored_image_path)
-        df_remove = pd.DataFrame({
-            "type": ["clean_mask-dirty_mask", "clean_mask-original", "dirty_mask-original"],
-            "value": [remove_metrics["clean_mask-dirty_mask"], remove_metrics["clean_mask-original"], remove_metrics["dirty_mask-original"]]})
-        return gr.BarPlot(
-                  df_remove,
-                  x="type",
-                  y="value"
-                )
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
 
 # Funcion que se ejecuta al cargar una imagen
 
@@ -119,6 +63,12 @@ def on_image_load_image(image_path):
       image = transforms.functional.to_pil_image(image).convert("RGB")
       image.save(f'image.jpg')
       return 'image.jpg'
+      
+      
+def image_resolution(image_path):
+      image = Image.open(image_path[:-3].replace("masks", "images")+"jpg").convert('RGB')
+      image = transformations(image)
+      return str(image.size())
         
 def on_image_load_target(image_path):
     real_mask = Image.open(image_path).convert('RGB')
@@ -129,27 +79,31 @@ def on_image_load_target(image_path):
         
 def on_image_load_pred(image_path, thr):
     image = Image.open(image_path[:-3].replace("masks", "images")+"jpg").convert('RGB')
-    torch.cuda.empty_cache()
-    gc.collect()
-    image_tensor = transformations(image).reshape((1, 3, 1024, 1024)).to(DEVICE_UNET)
+    image_tensor = transforms.Compose([transforms.Resize((1024, 1024)),transforms.ToTensor()])(image).reshape((1, 3, 1024, 1024)).to(DEVICE_UNET)
     global segmentation_model  
     segmentation_model = segmentation_model.to(DEVICE_UNET)
     mask = segmentation_model(image_tensor)
     mask = torch.sigmoid(mask)
-    mask_bin = (mask >= thr).float()
-    mask = transforms.functional.to_pil_image(mask_bin[0]).convert("RGB")
+    mask_bin = (mask > thr).float()
+    mask_people = face_extractor(image, prompt = "people", return_results = "mask", mask_multiplier = 255)
+    mask_people = transforms.Compose([transforms.Resize((1024, 1024)),transforms.ToTensor()])(Image.fromarray(mask_people.astype(np.uint8))).to(DEVICE_UNET)
+    mask_bin = mask_bin[0]*(mask_people==0)
+    mask = transforms.functional.to_pil_image(mask_bin).convert("RGB")
     mask.save(f'pred_mask.jpg')
     return 'pred_mask.jpg'
     
 def on_image_load_pred2(image_path, thr):
-    image = Image.open(image_path).convert('RGB')
-    image_tensor = transformations(image).reshape((1, 3, 1024, 1024)).to(DEVICE_UNET)
+    image = Image.open(image_path[:-3].replace("masks", "images")+"jpg").convert('RGB')
+    image_tensor = transforms.Compose([transforms.Resize((1024, 1024)),transforms.ToTensor()])(image).reshape((1, 3, 1024, 1024)).to(DEVICE_UNET)
     global segmentation_model  
     segmentation_model = segmentation_model.to(DEVICE_UNET)
     mask = segmentation_model(image_tensor)
     mask = torch.sigmoid(mask)
-    mask_bin = (mask >= thr).float()
-    mask = transforms.functional.to_pil_image(mask_bin[0]).convert("RGB")
+    mask_bin = (mask > thr).float()
+    mask_people = face_extractor(image, prompt = "people", return_results = "mask", mask_multiplier = 255)
+    mask_people = transforms.Compose([transforms.Resize((1024, 1024)),transforms.ToTensor()])(Image.fromarray(mask_people.astype(np.uint8))).to(DEVICE_UNET)
+    mask_bin = mask_people #mask_bin[0]*(mask_people==0)
+    mask = transforms.functional.to_pil_image(mask_bin).convert("RGB")
     mask.save(f'pred_mask.jpg')
     return 'pred_mask.jpg'
     
@@ -201,9 +155,6 @@ def extract_false_negatives(image_path, target_mask_path, pred_mask_path, thr):
     # Load images
     image = Image.open(image_path)
     image = transformations(image)
-    print(image.size())
-    print()
-    print()
     image = transforms.functional.to_pil_image(image).convert("RGB")
     image.save(f'image.jpg')
     image = cv2.imread('image.jpg')
@@ -260,19 +211,50 @@ def apply_fill_little_spaces(image_path, mask_type):
         return None
 
 # Procesar la imagen final usando la imagen original y la quinta imagen
-def process_final_image_target(original_image_path, target_image_path, text, strength, guidance, negative_prompt):
+def process_final_image_patches(original_image_path, target_image_path, text, strength, guidance, negative_prompt):
     try:
         target_image_path = apply_fill_little_spaces(target_image_path, "target")
-        torch.cuda.empty_cache()
-        gc.collect()
-        new_image = impainting_model.impaint(
-            image_path=original_image_path,
-            mask_path=target_image_path,
-            prompt="",
-            strength=strength,
-            guidance=guidance,
-            negative_prompt=negative_prompt
-        )
+        image = Image.open(original_image_path)
+        image = transforms.ToTensor()(image)
+        mask = Image.open(target_image_path)
+        mask = transforms.Compose([transforms.Resize((image.shape[1], image.shape[2])),transforms.ToTensor()])(mask)
+        counts = torch.zeros(3, image.shape[1], image.shape[2])
+        final_image = torch.zeros(3, image.shape[1], image.shape[2])
+        nw = math.ceil(image.shape[1]/1024)
+        nh = math.ceil(image.shape[2]/1024)
+        stridew = (image.shape[1] - 1024) // (nw-1)
+        strideh = (image.shape[2] - 1024) // (nh-1)
+        for i in range(nw):
+          for j in range(nh):
+            centerw = 511 + stridew*i
+            centerh = 511 + strideh*j
+            image_patch = image[:, centerw-511:centerw+513, centerh-511:centerh+513]
+            mask_patch = mask[:, centerw-511:centerw+513, centerh-511:centerh+513]
+            print(torch.sum(mask_patch))
+            #print(mask_patch)
+            if torch.sum(mask_patch).item() > 0:
+              image_pil = transforms.functional.to_pil_image(image_patch).convert("RGB")
+              image_pil.save(f'{original_image_path}_patch{i},{j}.jpg')
+              mask_pil = transforms.functional.to_pil_image(mask_patch).convert("RGB")
+              mask_pil.save(f'{target_image_path}_patch{i},{j}_mask.jpg')
+              torch.cuda.empty_cache()
+              gc.collect()
+              new_image_patch = impainting_model.impaint(
+                  image_path=f'{original_image_path}_patch{i},{j}.jpg',
+                  mask_path=f'{target_image_path}_patch{i},{j}_mask.jpg',
+                  prompt="",
+                  strength=strength,
+                  guidance=guidance,
+                  negative_prompt=negative_prompt
+              )
+              new_image_patch = transforms.ToTensor()(new_image_patch)
+              final_image[:, centerw-511:centerw+513, centerh-511:centerh+513] += new_image_patch
+              image[:, centerw-511:centerw+513, centerh-511:centerh+513] = image[:, centerw-511:centerw+513, centerh-511:centerh+513]*(mask_patch==0) + new_image_patch*(mask_patch>0)
+              counts[:, centerw-511:centerw+513, centerh-511:centerh+513] += torch.ones(3,1024,1024)*(mask_patch>0)
+            else: 
+              pass
+        new_image = image #final_image/counts
+        new_image = transforms.functional.to_pil_image(new_image).convert("RGB")
         new_image.save("final_output_target.png")
         return "final_output_target.png"
     except Exception as e:
@@ -330,19 +312,11 @@ with gr.Blocks() as demo:
         target = gr.Image(label="Target Mask", type="filepath")
         pred = gr.Image(label="Predicted Mask", type="filepath")
     
-        
-    # Fila 2: False positives y false negatives
-    with gr.Row():
-        fp_button = gr.Button("Extract False Positives")
-        fn_button = gr.Button("Extract False Negatives")
-    with gr.Row():
-        fp = gr.Image(label="False Positives", type="filepath")
-        fn = gr.Image(label="False Negatives", type="filepath")
 
     # Boton para generar imagenes con ambas mascaras
     with gr.Row():
-        send_button_target = gr.Button("Generate image with target mask")
-        send_button_pred = gr.Button("Generate image with pred mask")
+        send_button_patches = gr.Button("Generate image from patches (slow)")
+        send_button_pred = gr.Button("Generate image with pred mask (fast)")
         
     with gr.Row():
         strength = gr.Slider(minimum=0.0, maximum=1.0,
@@ -357,36 +331,15 @@ with gr.Blocks() as demo:
     # Fila 3: Inpainting con ambas mascaras (con y sin dilatado?)
     with gr.Row():
         img_target = gr.Image(label="With target", type="filepath")
-        img_real = gr.Image(label="Damaged Image", type="filepath")
+    with gr.Row():
         img_pred = gr.Image(label="With predicted", type="filepath")
-    
-    with gr.Row():
-      metrics_button = gr.Button("View metrics")
-    with gr.Row():
-      metrics_smudges = gr.BarPlot(
-        df_smudges,
-        x="type",
-        y="value"
-      )
-      metrics_remove = gr.BarPlot(
-        df_remove,
-        x="type",
-        y="value"
-      )
 
-    metrics_button.click(make_metrics_plot_smudges,
-        inputs = [image_path, img_pred, pred, threshold],
-        outputs = metrics_smudges
-    )
-    metrics_button.click(make_metrics_plot_remove,
-        inputs = [image_path, img_pred, pred],
-        outputs = metrics_remove
-    )
+
     # Al cargar la imagen se genera el caption en el textbox
     image_path.change(on_image_load_image, inputs=[image_path], outputs=img)
-    image_path.change(on_image_load_image, inputs=[image_path], outputs=img_real)
     image_path.change(on_image_load_target, inputs=[image_path], outputs=target)
     image_path.change(on_image_load_pred, inputs=[image_path, threshold], outputs=pred)
+    image_path.change(image_resolution, inputs=[image_path], outputs=text_input)
     mask_button.click(on_image_load_pred2, inputs=[img, threshold], outputs=pred)
     model_path.change(fn=upload_model, inputs=model_path, outputs=None)
 
@@ -398,14 +351,10 @@ with gr.Blocks() as demo:
 
     # Asignar eventos a la interfaz
     #img.change(reset_mask, inputs=[img], outputs=None)
-    fp_button.click(extract_false_positives, inputs=[
-                      img, target, pred, threshold], outputs=fp)
-    fn_button.click(extract_false_negatives, inputs=[
-                      img, target, pred, threshold], outputs=fn)
 
     # Boton para generar la imagen final usando la imagen original y las mascaras
-    send_button_target.click(process_final_image_target, inputs=[
-                      img, target, text_input, strength, guidance, negative_prompt], outputs=img_target)
+    send_button_patches.click(process_final_image_patches, inputs=[
+                      img, pred, text_input, strength, guidance, negative_prompt], outputs=img_target)
     
     send_button_pred.click(process_final_image_pred, inputs=[
                       img, pred, text_input, strength, guidance, negative_prompt], outputs=img_pred)

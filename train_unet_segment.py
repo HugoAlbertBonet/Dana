@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from PIL import Image
 import torch
+import wandb
+import json
+
 
 from models import Generator, UNet, Colorizing, SwinIR
 from models import Discriminator
@@ -20,7 +23,9 @@ parser.add_argument('--epoch', type=int, default=0, help='starting epoch')
 parser.add_argument('--n_epochs', type=int, default=200, help='number of epochs of training')
 parser.add_argument('--batchSize', type=int, default=10, help='size of the batches')
 parser.add_argument('--dataroot', type=str, default='./segmentation', help='root directory of the dataset')
-parser.add_argument('--name', type=str, default='unet_segmentation', help='name of the saved model')
+parser.add_argument('--name', type=str, default='', help='description of the experiment for wandb')
+parser.add_argument('--description', type=str, default='unet_segmentation', help='name of the saved model')
+parser.add_argument('--accumsteps', type=int, default=8, help='gradient accumulation steps')
 parser.add_argument('--lr', type=float, default=0.0002, help='initial learning rate')
 parser.add_argument('--decay_epoch', type=int, default=100, help='epoch to start linearly decaying the learning rate to 0')
 parser.add_argument('--size', type=int, default=1024, help='size of the data crop (squared assumed)')
@@ -33,6 +38,21 @@ print(opt)
 
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
+    
+with open("secret.json", "r") as f:
+  secret = json.load(f)
+wandb.login(key = secret["wandb"])
+config = {"learning_rate": opt.lr, 
+                "epochs": opt.n_epochs, 
+                "batch_size": opt.batchSize,
+                "model_name": opt.name,
+                "gradient_accumulation_steps": opt.accumsteps, 
+                "decay_epoch": opt.decay_epoch,
+                "image_size": opt.size,
+                "cuda": opt.cuda,
+                "description": opt.description}
+wandb.init(project="dana-segmentation", config = config)
+
 
 ###### Definition of variables ######
 # Networks
@@ -42,6 +62,8 @@ model = UNet(n_class = 1)
 if opt.cuda:
     model.cuda()
 
+# Magic
+wandb.watch(model, log_freq=100)
 #model.apply(weights_init_normal)
 
 # Lossess
@@ -60,8 +82,8 @@ input_unet2 = Tensor(opt.batchSize, 1, opt.size, opt.size)
 
 
 # Dataset loader
-transforms_ = [ transforms.Resize((opt.size, opt.size)), transforms.RandomAffine(30, translate= (0.2,0.2)), transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip()]#,
-                #transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1), transforms.RandomGrayscale(p=0.1), transforms.ElasticTransform(alpha=25.0)]
+transforms_ = [ transforms.Resize((opt.size, opt.size)), transforms.RandomAffine(30, translate= (0.2,0.2)), transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip(),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1), transforms.RandomGrayscale(p=0.1), transforms.ElasticTransform(alpha=25.0)]
 transforms_post = [transforms.ToTensor()]
 dataloader = DataLoader(SegmentationDataset(opt.dataroot, transforms_=transforms_, transforms_post = transforms_post, unaligned=False),
                         batch_size=opt.batchSize, shuffle=True) #, num_workers=opt.n_cpu)
@@ -85,10 +107,14 @@ def dice(pred, mask, threshold=0.5):
     return dice_score
 ###################################
 print("Starting training...")
+optimizer.zero_grad()
+accum_steps = 0
 
 ###### Training ######
 for epoch in range(opt.epoch, opt.n_epochs):
     model.train()
+    total_loss = 0
+    total_dice = 0
     for i, batch in enumerate(dataloader):
         if i == len(dataloader)-1: break
         # Set model input
@@ -96,18 +122,27 @@ for epoch in range(opt.epoch, opt.n_epochs):
         mask = Variable(input_unet2.copy_(batch['mask']))
 
         ###### main loop ######
-        optimizer.zero_grad()
 
         #loss
         pred = model(image)
         loss = criterion(pred, mask)
+        total_loss += loss.item()
+        train_dice = dice(pred, mask)
+        total_dice += train_dice
         loss.backward()
-
-        optimizer.step()
+        
+        #gradient accumulation
+        if accum_steps == opt.accumsteps:
+          optimizer.step()
+          optimizer.zero_grad()
         #print(pred.shape, mask.shape)
+        
+        if accum_steps == opt.accumsteps: accum_steps = 0
+        accum_steps += 1
 
         # Progress report (http://localhost:8097)
-        logger.log({'loss': loss, 'DICE': dice(pred, mask)})
+        logger.log({'loss': loss, 'DICE': train_dice})
+        wandb.log({'loss': loss, 'DICE': train_dice})
         
         # Validation phase
     model.eval()
@@ -132,6 +167,9 @@ for epoch in range(opt.epoch, opt.n_epochs):
     val_dice /= len(test_dataloader)
 
     print(f"\nEpoch {epoch+1}/{opt.n_epochs} - Validation Loss: {val_loss:.4f}, DICE: {val_dice:.4f}")
+    wandb.log({'train_loss': total_loss/len(dataloader), 'train_DICE': total_dice/len(dataloader), 'val_loss': val_loss, 'val_DICE': val_dice, "epoch": epoch, "lr": lr_scheduler.get_last_lr()[-1]})
+    #torch.onnx.export(model, val_image, "model.onnx")
+    #wandb.save("model.onnx")
     
 
     # Update learning rates
