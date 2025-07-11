@@ -8,6 +8,16 @@ import torch
 #from visdom import Visdom
 import numpy as np
 
+def generate_binary_mask(mask):
+    color = np.array([30/255, 144/255, 255/255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+
+    # Crear una imagen binaria basada en la máscara
+    mask_alpha = mask_image[:, :, 3]  # Suponiendo un canal alfa en la máscara
+    binary_mask = np.where(mask_alpha > 0, 255, 0).astype('uint8')
+    return binary_mask
+
 def tensor2image(tensor):
     image = 127.5*(tensor[0].cpu().float().numpy() + 1.0)
     if image.shape[0] == 1:

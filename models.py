@@ -104,7 +104,7 @@ class Discriminator(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, n_class = 3):
+    def __init__(self, n_class = 3, sam = False):
         super().__init__()
         
         # Encoder
@@ -155,6 +155,8 @@ class UNet(nn.Module):
 
         # Output layer
         self.outconv = nn.Conv2d(64, n_class, kernel_size=1)
+        self.outsam = nn.Conv2d(64, n_class, kernel_size=1)
+        self.sam = sam
 
     def forward(self, x):
         # Encoder
@@ -200,8 +202,11 @@ class UNet(nn.Module):
 
         # Output layer
         out = self.outconv(xd42)
-
-        return out
+        if self.sam: 
+          outsam = self.outsam(xd42)
+          return out, outsam
+        else:
+          return out
     
 
 
@@ -336,8 +341,26 @@ class Attention_UNet(nn.Module):
         return logits
         
 
+from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
 
 
+class SegformerDANA(nn.Module):
+    def __init__(self, token, batch = 4):
+        super(SegformerDANA, self).__init__()
+        self.model = SegformerForSemanticSegmentation.from_pretrained("nvidia/segformer-b4-finetuned-ade-512-512", token = token)
+        self.up = nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True)
+        self.conv = nn.Conv2d(150, 1, kernel_size=3, padding = 1, bias = False)
+        self.batch = batch
+    def forward(self, pixel_values):
+        output = self.model(pixel_values = pixel_values)
+        logits = output.logits
+        logits = self.up(logits)
+        logits = self.conv(logits)
+        return logits.reshape((self.batch, 1, 1024, 1024))
+        
+        
+        
+        
 
 
 

@@ -215,22 +215,31 @@ class ImageNetDanaDataset(Dataset):
         
         
         
+
+
         
-        
+from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
         
 class SegmentationDataset(Dataset):
     
-    def __init__(self, root, transforms_=[], transforms_post = [transforms.ToTensor()], unaligned=False, mode='train'):
-        self.transform = transforms.Compose(transforms_ + transforms_post)
+    def __init__(self, root, transforms_=[], transforms_color = [], transforms_post = [transforms.ToTensor()], unaligned=False, mode='train', yolo = False, segformer = False, token = None):
+        self.transform = transforms.Compose(transforms_)
         self.transforms_post = transforms.Compose(transforms_post)
+        self.transforms_color = transforms.Compose(transforms_color + transforms_post)
         self.images = sorted(glob.glob(root + '/images/*.*'))
-        self.masks = sorted(glob.glob(root + '/masks/*.*'))
+        self.masks = [mask for mask in sorted(glob.glob(root + '/masks/*.*')) if "0006-MG005.png" not in mask]
+        self.masks_retrain = sorted(glob.glob(root + '/retrain/masks/*.*'))
+        self.all_masks = self.masks + self.masks_retrain
         if mode == "test":
             self.masks = self.masks[round(0.8*len(self.masks)):]
         else:
-            self.masks = self.masks[:round(0.8*len(self.masks))]
+            self.masks = self.masks[:round(0.8*len(self.masks))] + self.masks_retrain
         self.mode = mode
         self.unaligned = unaligned
+        self.yolo = yolo
+        self.segformer = segformer
+        if segformer:
+          self.processor = SegformerImageProcessor.from_pretrained("nvidia/segformer-b4-finetuned-ade-512-512", token = token)
 
     def __getitem__(self, index):
         name = self.masks[index]
@@ -242,8 +251,17 @@ class SegmentationDataset(Dataset):
         image = self.transform(Image.open(name[:-3].replace("masks", "images")+"jpg").convert('RGB') )
         random.seed(seed) # apply this seed to mask transforms
         torch.manual_seed(seed)
-        mask = self.transform(Image.open(name).convert('L'))
-        return {'image': image, 'mask': mask}
+        mask = self.transforms_post(self.transform(Image.open(name).convert('L')))
+        peoplemask = self.transforms_post(self.transform(Image.open(name.replace("masks", "peoplemask")).convert('L')))
+        if self.yolo:
+          yolomask = self.transforms_post(self.transform(Image.open(name.replace("masks", "yolomask")).convert('L')))
+        image = self.transforms_color(image)
+        if self.segformer:
+          image = self.processor(images=transforms.functional.to_pil_image(image).resize((512, 512)), return_tensors="pt")
+        if self.yolo:
+          return {'image': image, 'mask': mask, "people": peoplemask, "yolo": yolomask}
+        else:
+          return {'image': image, 'mask': mask, "people": peoplemask}
 
     def __len__(self):
         return len(self.masks)

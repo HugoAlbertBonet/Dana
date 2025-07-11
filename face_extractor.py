@@ -6,9 +6,10 @@ from tqdm import tqdm
 from PIL import Image
 
 class FaceExtractor():
-  def __init__(self, model_size:["tiny", "small", "base-plus", "large"] = "tiny"):
+  def __init__(self, model_size:["tiny", "small", "base-plus", "large"] = "tiny", device = "cpu"):
     self.sam = LangSAM(model_type=f"sam2-hiera-{model_size}")
     self.model_size = model_size
+    self.sam.device = device
 
   def print_result(self):
     self.sam.show_anns(
